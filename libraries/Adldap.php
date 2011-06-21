@@ -701,7 +701,7 @@ class Adldap {
         
 		// @modified Harry Gonzalez
 		// Fix for undeclared if empty group
-		if (isset($info[0]["member"])) {
+		if (!isset($info[0]["member"])) {
             return (false);   
         }
 		$users=$info[0]["member"];
