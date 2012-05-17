@@ -1,7 +1,7 @@
 <?php  if ( ! defined('BASEPATH')) exit('No direct script access allowed');
 /**
  * PHP LDAP CLASS FOR MANIPULATING ACTIVE DIRECTORY 
- * Version 3.3.2
+ * Version 3.3.3
  * 
  * PHP Version 5 with SSL and LDAP support
  * 
@@ -9,7 +9,7 @@
  *   email: scott@wiggumworld.com, adldap@richardhyland.com
  *   http://adldap.sourceforge.net/
  * 
- * Copyright (c) 2006-2010 Scott Barnett, Richard Hyland
+ * Copyright (c) 2006-2012 Scott Barnett, Richard Hyland
  * 
  * We'd appreciate any improvements or additions to be submitted back
  * to benefit the entire community :)
@@ -27,11 +27,11 @@
  * @category ToolsAndUtilities
  * @package adLDAP
  * @author Scott Barnett, Richard Hyland
- * @modified Dan Horrigan, Harry Gonzalez
- * @copyright (c) 2006-2010 Scott Barnett, Richard Hyland
+ * @modified Dan Horrigan, Harry Gonzalez, Michael Förster
+ * @copyright (c) 2006-2012 Scott Barnett, Richard Hyland
  * @license http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html LGPLv2.1
  * @revision $Revision: 91 $
- * @version 3.3.2
+ * @version 3.3.3
  * @link http://adldap.sourceforge.net/
  */
 
@@ -505,7 +505,36 @@ class Adldap {
         if ($result==false){ return (false); }
         return (true);
     }
-    
+
+    /**
+    * Add a computer to a group
+    * 
+    * @param string $group The group to add the computer to
+    * @param string $computer The computer to add to the group
+    * @param bool $isGUID Is the computername passed a GUID or a samAccountName
+    * @return bool
+    */
+    public function group_add_computer($group,$computer,$isGUID=false){
+        // Adding a computer is a bit fiddly, we need to get the full DN of the computer
+        // and add it using the full DN of the group
+        
+        // Find the computer's dn
+        $computer_dn=$this->computer_dn($computer,$isGUID);
+        if ($computer_dn===false){ return (false); }
+        
+        // Find the group's dn
+        $group_info=$this->group_info($group,array("cn"));
+        if ($group_info[0]["dn"]===NULL){ return (false); }
+        $group_dn=$group_info[0]["dn"];
+        
+        $add=array();
+        $add["member"] = $computer_dn;
+        
+        $result=@ldap_mod_add($this->_conn,$group_dn,$add);
+        if ($result==false){ return (false); }
+        return (true);
+    }
+
     /**
     * Add a contact to a group
     * 
@@ -615,7 +644,34 @@ class Adldap {
         if ($result==false){ return (false); }
         return (true);
     }
-    
+
+    /**
+    * Remove a computer from a group
+    * 
+    * @param string $group The group to remove a user from
+    * @param string $user The AD computer to remove from the group
+    * @param bool $isGUID Is the username passed a GUID or a samAccountName
+    * @return bool
+    */
+    public function group_del_computer($group,$computer,$isGUID=false){
+
+        // Find the parent dn
+        $group_info=$this->group_info($group,array("cn"));
+        if ($group_info[0]["dn"]===NULL){ return (false); }
+        $group_dn=$group_info[0]["dn"];
+        
+        // Find the users dn
+        $computer_dn=$this->computer_dn($computer,$isGUID);
+        if ($computer_dn===false){ return (false); }
+
+        $del=array();
+        $del["member"] = $computer_dn;
+        
+        $result=@ldap_mod_del($this->_conn,$group_dn,$del);
+        if ($result==false){ return (false); }
+        return (true);
+    }
+
     /**
     * Remove a contact from a group
     * 
@@ -637,7 +693,7 @@ class Adldap {
         if ($result==false){ return (false); }
         return (true);
     }
-    
+
     /**
     * Return a list of groups in a group
     * 
@@ -777,7 +833,7 @@ class Adldap {
     public function recursive_groups($group){
         if ($group===NULL){ return (false); }
 
-        $ret_groups=array();          
+        $ret_groups=array();
         
         $groups=$this->group_info($group,array("memberof"));
         if (isset($groups[0]["memberof"]) && is_array($groups[0]["memberof"])) {
@@ -883,12 +939,12 @@ class Adldap {
     * @param array $attributes The attributes to set to the user account
     * @return bool
     */
-        public function user_create($attributes){
+    public function user_create($attributes){
         // Check for compulsory fields
         if (!array_key_exists("username",$attributes)){ return ("Missing compulsory field [username]"); }
         if (!array_key_exists("firstname",$attributes)){ return ("Missing compulsory field [firstname]"); }
         if (!array_key_exists("surname",$attributes)){ return ("Missing compulsory field [surname]"); }
-        if (!array_key_exists("email",$attributes)){ return ("Missing compulsory field [email]"); }
+        //if (!array_key_exists("email",$attributes)){ return ("Missing compulsory field [email]"); } //not need to create a user
         if (!array_key_exists("container",$attributes)){ return ("Missing compulsory field [container]"); }
         if (!is_array($attributes["container"])){ return ("Container attribute must be an array."); }
 
@@ -902,7 +958,7 @@ class Adldap {
         $add=$this->adldap_schema($attributes);
         
         // Additional stuff only used for adding accounts
-        $add["cn"][0]=$attributes["display_name"];
+        $ucn["cn"][0]=str_replace(",", "\,", $attributes["display_name"]); // escape comma in display_name
         $add["samaccountname"][0]=$attributes["username"];
         $add["objectclass"][0]="top";
         $add["objectclass"][1]="person";
@@ -1149,7 +1205,29 @@ class Adldap {
         
         return (true);
     }
-    
+
+    /**
+    * Set User Thumbnailphoto
+    * 
+    * @param string $username The username to query
+    * @param resource $imagestream of the thumbnailphoto
+    * @return bool
+    */
+    public function user_set_thumbnailphoto($username,$imagestream) { 
+        //find the dn of the user
+        $user=$this->user_info($username,array("cn"));
+        if ($user[0]["dn"]==NULL){ return (false); }
+        $user_dn=$user[0]["dn"];
+              
+        $add["thumbnailphoto"] = array($imagestream);
+         
+        $result=ldap_mod_replace($this->_conn,$user_dn,$add);
+                
+        if ($result==false){ return (false); }
+
+        return (true); 
+    }
+
     /**
     * Disable a user account
     * 
@@ -1182,6 +1260,26 @@ class Adldap {
         return (true);
     }
     
+    /**
+    * Unlock a user account
+    * 
+    * @param string $username The username to enable
+    * @return bool
+    */
+    public function user_unlock($username) {
+        //find the dn of the user
+        $user=$this->user_info($username,array("cn"));
+        if ($user[0]["dn"]==NULL){ return (false); }
+        $user_dn=$user[0]["dn"];
+      
+        $add["lockoutTime"] = array(0);
+ 
+        $result=ldap_mod_replace($this->_conn,$user_dn,$add);
+        
+        if ($result==false){ return (false); }
+        return (true); 
+    }
+
     /**
     * Set the password of a user - This must be performed over SSL
     * 
@@ -1216,13 +1314,14 @@ class Adldap {
     * @param bool $include_desc Return a description of the user
     * @param string $search Search parameter
     * @param bool $sorted Sort the user accounts
+    * @param string $filter set additional ldap filter
     * @return array
     */
-    public function all_users($include_desc = false, $search = "*", $sorted = true){
+    public function all_users($include_desc = false, $search = "*", $sorted = true, $filter = ""){
         if (!$this->_bind){ return (false); }
         
         // Perform the search and grab all their details
-        $filter = "(&(objectClass=user)(samaccounttype=". ADLDAP_NORMAL_ACCOUNT .")(objectCategory=person)(cn=".$search."))";
+        $filter = "(&(objectClass=user)(samaccounttype=". ADLDAP_NORMAL_ACCOUNT .")(objectCategory=person)(cn=".$search.")".$filter.")";
         $fields=array("samaccountname","displayname");
         $sr=ldap_search($this->_conn,$this->_base_dn,$filter,$fields);
         $entries = ldap_get_entries($this->_conn, $sr);
@@ -1240,7 +1339,39 @@ class Adldap {
         if ($sorted){ asort($users_array); }
         return ($users_array);
     }
-    
+
+    /**
+    * Return a list of all users in AD search by samaccountname
+    * 
+    * @param bool $include_desc Return a description of the user
+    * @param string $search Search parameter
+    * @param bool $sorted Sort the user accounts
+    * @param string $filter set additional ldap filter
+    * @return array
+    */
+    public function all_users_samaccountname($include_desc = false, $search = "*", $sorted = true, $filter = ""){
+        if (!$this->_bind){ return (false); }
+        
+        // Perform the search and grab all their details
+        $filter = "(&(objectClass=user)(samaccounttype=". ADLDAP_NORMAL_ACCOUNT .")(objectCategory=person)(samaccountname=".$search.")".$filter.")";
+        $fields=array("samaccountname","displayname");
+        $sr=ldap_search($this->_conn,$this->_base_dn,$filter,$fields);
+        $entries = ldap_get_entries($this->_conn, $sr);
+
+        $users_array = array();
+        for ($i=0; $i<$entries["count"]; $i++){
+            if ($include_desc && strlen($entries[$i]["displayname"][0])>0){
+                $users_array[ $entries[$i]["samaccountname"][0] ] = $entries[$i]["displayname"][0];
+            } elseif ($include_desc){
+                $users_array[ $entries[$i]["samaccountname"][0] ] = $entries[$i]["samaccountname"][0];
+            } else {
+                array_push($users_array, $entries[$i]["samaccountname"][0]);
+            }
+        }
+        if ($sorted){ asort($users_array); }
+        return ($users_array);
+    }
+
     /**
     * Converts a username (samAccountName) to a GUID
     * 
@@ -1385,7 +1516,9 @@ class Adldap {
             }
         }
         
-        $entries[0]["memberof"]["count"]++;
+        if(isset($entries[0]["memberof"]["count"])) {
+           $entries[0]["memberof"]["count"]++;
+        }
         return ($entries);
     }
     
@@ -1491,7 +1624,6 @@ class Adldap {
     * @param string $dn_type The type of record to list.  This can be ADLDAP_FOLDER or ADLDAP_CONTAINER.
     * @param bool $recursive Recursively search sub folders
     * @param bool $type Specify a type of object to search for
-
     * @return array
     */
     public function folder_list($folder_name = NULL, $dn_type = ADLDAP_FOLDER, $recursive = NULL, $type = NULL) {
@@ -1578,7 +1710,38 @@ class Adldap {
         
         return ($entries);
     }
-    
+
+    /**
+    * Return a list of all computers in AD
+    * 
+    * @param bool $include_desc Return a description of the computer
+    * @param string $search Search parameter
+    * @param bool $sorted Sort the computer accounts
+    * @return array
+    */
+    public function all_computers($include_desc = false, $search = "*", $sorted = true){
+        if (!$this->_bind){ return (false); }
+        
+        // Perform the search and grab all their details
+        $filter = "(&(objectClass=computer)(cn=".$search."))";
+        $fields=array("samaccountname","distinguishedname");           
+        $sr=ldap_search($this->_conn,$this->_base_dn,$filter,$fields);
+        $entries = ldap_get_entries($this->_conn, $sr);
+
+        $users_array = array();
+        for ($i=0; $i<$entries["count"]; $i++){
+            if ($include_desc && strlen($entries[$i]["samaccountname"][0])>0){
+                $users_array[ $entries[$i]["distinguishedname"][0] ] = $entries[$i]["samaccountname"][0];
+            } elseif ($include_desc){
+                $users_array[ $entries[$i]["distinguishedname"][0] ] = $entries[$i]["distinguishedname"][0];
+            } else {
+                array_push($users_array, $entries[$i]["distinguishedname"][0]);
+            }
+        }
+        if ($sorted){ asort($users_array); }
+        return ($users_array);
+    }
+
     /**
     * Check if a computer is in a group
     * 
@@ -2040,56 +2203,60 @@ class Adldap {
         // Check every attribute to see if it contains 8bit characters and then UTF8 encode them
         array_walk($attributes, array($this, 'encode8bit'));
 
-        if ($attributes["address_city"]){ $mod["l"][0]=$attributes["address_city"]; }
-        if ($attributes["address_code"]){ $mod["postalCode"][0]=$attributes["address_code"]; }
-        //if ($attributes["address_country"]){ $mod["countryCode"][0]=$attributes["address_country"]; } // use country codes?
-        if ($attributes["address_country"]){ $mod["c"][0]=$attributes["address_country"]; }
-        if ($attributes["address_pobox"]){ $mod["postOfficeBox"][0]=$attributes["address_pobox"]; }
-        if ($attributes["address_state"]){ $mod["st"][0]=$attributes["address_state"]; }
-        if ($attributes["address_street"]){ $mod["streetAddress"][0]=$attributes["address_street"]; }
-        if ($attributes["company"]){ $mod["company"][0]=$attributes["company"]; }
-        if ($attributes["change_password"]){ $mod["pwdLastSet"][0]=0; }
-        if ($attributes["department"]){ $mod["department"][0]=$attributes["department"]; }
-        if ($attributes["description"]){ $mod["description"][0]=$attributes["description"]; }
-        if ($attributes["display_name"]){ $mod["displayName"][0]=$attributes["display_name"]; }
-        if ($attributes["email"]){ $mod["mail"][0]=$attributes["email"]; }
-        if ($attributes["expires"]){ $mod["accountExpires"][0]=$attributes["expires"]; } //unix epoch format?
-        if ($attributes["firstname"]){ $mod["givenName"][0]=$attributes["firstname"]; }
-        if ($attributes["home_directory"]){ $mod["homeDirectory"][0]=$attributes["home_directory"]; }
-        if ($attributes["home_drive"]){ $mod["homeDrive"][0]=$attributes["home_drive"]; }
-        if ($attributes["initials"]){ $mod["initials"][0]=$attributes["initials"]; }
-        if ($attributes["logon_name"]){ $mod["userPrincipalName"][0]=$attributes["logon_name"]; }
-        if ($attributes["manager"]){ $mod["manager"][0]=$attributes["manager"]; }  //UNTESTED ***Use DistinguishedName***
-        if ($attributes["office"]){ $mod["physicalDeliveryOfficeName"][0]=$attributes["office"]; }
-        if ($attributes["password"]){ $mod["unicodePwd"][0]=$this->encode_password($attributes["password"]); }
-        if ($attributes["profile_path"]){ $mod["profilepath"][0]=$attributes["profile_path"]; }
-        if ($attributes["script_path"]){ $mod["scriptPath"][0]=$attributes["script_path"]; }
-        if ($attributes["surname"]){ $mod["sn"][0]=$attributes["surname"]; }
-        if ($attributes["title"]){ $mod["title"][0]=$attributes["title"]; }
-        if ($attributes["telephone"]){ $mod["telephoneNumber"][0]=$attributes["telephone"]; }
-        if ($attributes["mobile"]){ $mod["mobile"][0]=$attributes["mobile"]; }
-        if ($attributes["pager"]){ $mod["pager"][0]=$attributes["pager"]; }
-        if ($attributes["ipphone"]){ $mod["ipphone"][0]=$attributes["ipphone"]; }
-        if ($attributes["web_page"]){ $mod["wWWHomePage"][0]=$attributes["web_page"]; }
-        if ($attributes["fax"]){ $mod["facsimileTelephoneNumber"][0]=$attributes["fax"]; }
-        if ($attributes["enabled"]){ $mod["userAccountControl"][0]=$attributes["enabled"]; }
+        if (isset($attributes["address_city"])){ $mod["l"][0]=$attributes["address_city"]; }
+        if (isset($attributes["address_code"])){ $mod["postalCode"][0]=$attributes["address_code"]; }
+        //if (isset($attributes["address_country"])){ $mod["countryCode"][0]=$attributes["address_country"]; } // use country codes?
+        if (isset($attributes["address_country"])){ $mod["c"][0]=$attributes["address_country"]; }
+        if (isset($attributes["address_pobox"])){ $mod["postOfficeBox"][0]=$attributes["address_pobox"]; }
+        if (isset($attributes["address_state"])){ $mod["st"][0]=$attributes["address_state"]; }
+        if (isset($attributes["address_street"])){ $mod["streetAddress"][0]=$attributes["address_street"]; }
+        if (isset($attributes["company"])){ $mod["company"][0]=$attributes["company"]; }
+        if (isset($attributes["change_password"])){ $mod["pwdLastSet"][0]=$attributes["change_password"]; }
+        if (isset($attributes["department"])){ $mod["department"][0]=$attributes["department"]; }
+        if (isset($attributes["description"])){ $mod["description"][0]=$attributes["description"]; }
+        if (isset($attributes["display_name"])){ $mod["displayName"][0]=$attributes["display_name"]; }
+        if (isset($attributes["email"])){ $mod["mail"][0]=$attributes["email"]; }
+        if (isset($attributes["expires"])){ $mod["accountExpires"][0]=$attributes["expires"]; } //unix epoch format?
+        if (isset($attributes["firstname"])){ $mod["givenName"][0]=$attributes["firstname"]; }
+        if (isset($attributes["home_directory"])){ $mod["homeDirectory"][0]=$attributes["home_directory"]; }
+        if (isset($attributes["home_drive"])){ $mod["homeDrive"][0]=$attributes["home_drive"]; }
+        if (isset($attributes["initials"])){ $mod["initials"][0]=$attributes["initials"]; }
+        if (isset($attributes["logon_name"])){ $mod["userPrincipalName"][0]=$attributes["logon_name"]; }
+        if (isset($attributes["manager"])){ $mod["manager"][0]=$attributes["manager"]; }  //UNTESTED ***Use DistinguishedName***
+        if (isset($attributes["office"])){ $mod["physicalDeliveryOfficeName"][0]=$attributes["office"]; }
+        if (isset($attributes["password"])){ $mod["unicodePwd"][0]=$this->encode_password($attributes["password"]); }
+        if (isset($attributes["profile_path"])){ $mod["profilepath"][0]=$attributes["profile_path"]; }
+        if (isset($attributes["script_path"])){ $mod["scriptPath"][0]=$attributes["script_path"]; }
+        if (isset($attributes["surname"])){ $mod["sn"][0]=$attributes["surname"]; }
+        if (isset($attributes["title"])){ $mod["title"][0]=$attributes["title"]; }
+        if (isset($attributes["telephone"])){ $mod["telephoneNumber"][0]=$attributes["telephone"]; }
+        if (isset($attributes["mobile"])){ $mod["mobile"][0]=$attributes["mobile"]; }
+        if (isset($attributes["pager"])){ $mod["pager"][0]=$attributes["pager"]; }
+        if (isset($attributes["employeeid"])){ $mod["employeeid"][0]=$attributes["employeeid"]; }
+        if (isset($attributes["employeenumber"])){ $mod["employeenumber"][0]=$attributes["employeenumber"]; }
+        if (isset($attributes["ipphone"])){ $mod["ipphone"][0]=$attributes["ipphone"]; }
+        if (isset($attributes["web_page"])){ $mod["wWWHomePage"][0]=$attributes["web_page"]; }
+        if (isset($attributes["fax"])){ $mod["facsimiletelephonenumber"][0]=$attributes["fax"]; }
+        if (isset($attributes["mail"])){ $mod["mail"][0]=$attributes["mail"]; }
+        if (isset($attributes["info"])){ $mod["info"][0]=$attributes["info"]; }
+        if (isset($attributes["enabled"])){ $mod["userAccountControl"][0]=$attributes["enabled"]; }
         
         // Distribution List specific schema
-        if ($attributes["group_sendpermission"]){ $mod["dlMemSubmitPerms"][0]=$attributes["group_sendpermission"]; }
-        if ($attributes["group_rejectpermission"]){ $mod["dlMemRejectPerms"][0]=$attributes["group_rejectpermission"]; }
+        if (isset($attributes["group_sendpermission"])){ $mod["dlMemSubmitPerms"][0]=$attributes["group_sendpermission"]; }
+        if (isset($attributes["group_rejectpermission"])){ $mod["dlMemRejectPerms"][0]=$attributes["group_rejectpermission"]; }
         
         // Exchange Schema
-        if ($attributes["exchange_homemdb"]){ $mod["homeMDB"][0]=$attributes["exchange_homemdb"]; }
-        if ($attributes["exchange_mailnickname"]){ $mod["mailNickname"][0]=$attributes["exchange_mailnickname"]; }
-        if ($attributes["exchange_proxyaddress"]){ $mod["proxyAddresses"][0]=$attributes["exchange_proxyaddress"]; }
-        if ($attributes["exchange_usedefaults"]){ $mod["mDBUseDefaults"][0]=$attributes["exchange_usedefaults"]; }
-        if ($attributes["exchange_policyexclude"]){ $mod["msExchPoliciesExcluded"][0]=$attributes["exchange_policyexclude"]; }
-        if ($attributes["exchange_policyinclude"]){ $mod["msExchPoliciesIncluded"][0]=$attributes["exchange_policyinclude"]; }       
-        if ($attributes["exchange_addressbook"]){ $mod["showInAddressBook"][0]=$attributes["exchange_addressbook"]; }       
+        if (isset($attributes["exchange_homemdb"])){ $mod["homeMDB"][0]=$attributes["exchange_homemdb"]; }
+        if (isset($attributes["exchange_mailnickname"])){ $mod["mailNickname"][0]=$attributes["exchange_mailnickname"]; }
+        if (isset($attributes["exchange_proxyaddress"])){ $mod["proxyAddresses"][0]=$attributes["exchange_proxyaddress"]; }
+        if (isset($attributes["exchange_usedefaults"])){ $mod["mDBUseDefaults"][0]=$attributes["exchange_usedefaults"]; }
+        if (isset($attributes["exchange_policyexclude"])){ $mod["msExchPoliciesExcluded"][0]=$attributes["exchange_policyexclude"]; }
+        if (isset($attributes["exchange_policyinclude"])){ $mod["msExchPoliciesIncluded"][0]=$attributes["exchange_policyinclude"]; }     
+        if (isset($attributes["exchange_addressbook"])){ $mod["showInAddressBook"][0]=$attributes["exchange_addressbook"]; }
         
         // This schema is designed for contacts
-        if ($attributes["exchange_hidefromlists"]){ $mod["msExchHideFromAddressLists"][0]=$attributes["exchange_hidefromlists"]; }
-        if ($attributes["contact_email"]){ $mod["targetAddress"][0]=$attributes["contact_email"]; }
+        if (isset($attributes["exchange_hidefromlists"])){ $mod["msExchHideFromAddressLists"][0]=$attributes["exchange_hidefromlists"]; }
+        if (isset($attributes["contact_email"])){ $mod["targetAddress"][0]=$attributes["contact_email"]; }
         
         //echo ("<pre>"); print_r($mod);
         /*
@@ -2275,6 +2442,20 @@ class Adldap {
         if ($user[0]["dn"]===NULL){ return (false); }
         $user_dn=$user[0]["dn"];
         return ($user_dn);
+    }
+
+    /**
+    * Obtain the computers's distinguished name based on their computerid 
+    * 
+    * @param string $computername The computername
+    * @param bool $isGUID Is the computername passed a GUID or a samAccountName
+    * @return string
+    */
+    protected function computer_dn($computername,$isGUID=false){
+        $computer=$this->computer_info($computername,array("cn"),$isGUID);
+        if ($computer[0]["dn"]===NULL){ return (false); }
+        $computer_dn=$computer[0]["dn"];
+        return ($computer_dn);
     }
 
     /**
