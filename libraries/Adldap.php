@@ -977,7 +977,7 @@ class Adldap {
         $container="OU=".implode(",OU=",$attributes["container"]);
 
         // Add the entry
-        $result=@ldap_add($this->_conn, "CN=".$add["cn"][0].", ".$container.",".$this->_base_dn, $add);
+        $result=@ldap_add($this->_conn, "CN=".$add["ucn"][0].", ".$container.",".$this->_base_dn, $add);
         if ($result!=true){ return (false); }
         
         return (true);
